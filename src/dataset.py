@@ -6,6 +6,7 @@ from typing import Tuple, List, Iterator
 import numpy as np
 from PIL import Image
 import mlx.core as mx
+import json
 
 
 class ImageDataset:
@@ -70,3 +71,48 @@ def create_dataloader(
 
             batch = np.stack([dataset[i] for i in batch_indices])
             yield mx.array(batch)
+
+
+class CaptionDataset:
+    """Dataset for loading image-caption pairs."""
+
+    def __init__(
+        self,
+        image_dir: str,
+        captions_file: str,
+        image_size: Tuple[int, int] = (320, 200)
+    ):
+        self.image_dir = Path(image_dir)
+        self.image_size = image_size
+        self.pairs = self._load_captions(captions_file)
+
+    def _load_captions(self, captions_file: str) -> List[dict]:
+        """Load image-caption pairs from JSONL file."""
+        pairs = []
+        with open(captions_file, 'r') as f:
+            for line in f:
+                if line.strip():
+                    pairs.append(json.loads(line))
+        return pairs
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int) -> Tuple[np.ndarray, str]:
+        """Load an image-caption pair.
+
+        Returns:
+            Tuple of (image array CHW [-1,1], caption string)
+        """
+        pair = self.pairs[idx]
+        img_path = self.image_dir / pair['image']
+
+        img = Image.open(img_path).convert('RGB')
+        if img.size != self.image_size:
+            img = img.resize(self.image_size, Image.Resampling.NEAREST)
+
+        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = arr * 2.0 - 1.0
+        arr = np.transpose(arr, (2, 0, 1))
+
+        return arr, pair['caption']

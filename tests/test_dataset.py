@@ -47,3 +47,39 @@ def test_image_dataset_batching():
     for i in range(4):
         os.remove(f"data/test_images/test_{i}.png")
     os.rmdir("data/test_images")
+
+
+def test_caption_dataset_loads_pairs():
+    """CaptionDataset should load image-caption pairs."""
+    from dataset import CaptionDataset
+    from PIL import Image
+    import os
+    import json
+
+    # Setup test data
+    os.makedirs("data/test_images", exist_ok=True)
+    img = Image.new('RGB', (320, 200), color=(100, 150, 200))
+    img.save("data/test_images/scene.png")
+
+    captions = [
+        {"image": "scene.png", "caption": "A blue sky over mountains"}
+    ]
+    with open("data/test_captions.jsonl", "w") as f:
+        for c in captions:
+            f.write(json.dumps(c) + "\n")
+
+    dataset = CaptionDataset(
+        image_dir="data/test_images",
+        captions_file="data/test_captions.jsonl",
+        image_size=(320, 200)
+    )
+
+    assert len(dataset) == 1
+    image, caption = dataset[0]
+    assert image.shape == (3, 200, 320)
+    assert caption == "A blue sky over mountains"
+
+    # Cleanup
+    os.remove("data/test_images/scene.png")
+    os.rmdir("data/test_images")
+    os.remove("data/test_captions.jsonl")
