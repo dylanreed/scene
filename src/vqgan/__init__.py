@@ -1,1 +1,1 @@
-from .layers import ResidualBlock
+from .layers import ResidualBlock, Downsample, Upsample
