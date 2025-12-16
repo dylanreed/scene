@@ -1,0 +1,21 @@
+model:
+  vocab_size: 512  # matches codebook_size
+  max_seq_len: 240  # 20x12 tokens
+  embed_dim: 256
+  num_heads: 8
+  num_layers: 6
+  mlp_ratio: 4
+  dropout: 0.1
+  text_embed_dim: 256
+  max_text_len: 128
+
+training:
+  batch_size: 8
+  learning_rate: 1e-4
+  num_epochs: 100
+  save_every: 10
+  sample_every: 5
+
+data:
+  captions_file: "data/captions.jsonl"
+  vqgan_checkpoint: "checkpoints/vqgan_best.npz"
