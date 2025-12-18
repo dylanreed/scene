@@ -35,6 +35,19 @@ def save_checkpoint(model: VQGAN, discriminator: PatchDiscriminator,
     print(f"Saved checkpoint to {path}")
 
 
+def load_checkpoint(path: str, model: VQGAN, discriminator: PatchDiscriminator):
+    """Load model checkpoint and return starting epoch."""
+    checkpoint = mx.load(path)
+
+    # Load model weights
+    model.load_weights(list(checkpoint['model'].items()))
+    discriminator.load_weights(list(checkpoint['discriminator'].items()))
+
+    start_epoch = checkpoint['epoch']
+    print(f"Loaded checkpoint from {path} (epoch {start_epoch})")
+    return start_epoch
+
+
 def save_samples(model: VQGAN, batch: mx.array, epoch: int, output_dir: str):
     """Save reconstruction samples."""
     model.eval()
@@ -84,24 +97,33 @@ def train_step(
 ):
     """Single training step."""
 
+    # Store auxiliary values
+    aux_data = {}
+
     # Generator forward and loss
     def g_loss_fn(model):
         x_recon, _, vq_loss = model(batch)
+        aux_data['x_recon'] = x_recon
+        aux_data['vq_loss'] = vq_loss
 
         # Reconstruction loss
         recon_loss = reconstruction_loss(batch, x_recon)
+        aux_data['recon_loss'] = recon_loss
 
         # Adversarial loss
         fake_logits = discriminator(x_recon)
         g_adv_loss = hinge_loss_g(fake_logits)
 
         total_loss = recon_loss + vq_loss + disc_weight * g_adv_loss
-        return total_loss, (recon_loss, vq_loss, g_adv_loss, x_recon)
+        return total_loss
 
     # Generator step
-    (g_loss, aux), g_grads = mx.value_and_grad(g_loss_fn, has_aux=True)(model)
-    recon_loss, vq_loss, g_adv_loss, x_recon = aux
+    g_loss, g_grads = nn.value_and_grad(model, g_loss_fn)(model)
     optimizer_g.update(model, g_grads)
+
+    x_recon = aux_data['x_recon']
+    recon_loss = aux_data['recon_loss']
+    vq_loss = aux_data['vq_loss']
 
     # Discriminator forward and loss
     def d_loss_fn(discriminator):
@@ -110,7 +132,7 @@ def train_step(
         return hinge_loss_d(real_logits, fake_logits)
 
     # Discriminator step
-    d_loss, d_grads = mx.value_and_grad(d_loss_fn)(discriminator)
+    d_loss, d_grads = nn.value_and_grad(discriminator, d_loss_fn)(discriminator)
     optimizer_d.update(discriminator, d_grads)
 
     mx.eval(model.parameters(), discriminator.parameters())
@@ -123,7 +145,7 @@ def train_step(
     }
 
 
-def train(config_path: str):
+def train(config_path: str, resume_path: str = None):
     """Main training loop."""
     config = load_config(config_path)
 
@@ -159,14 +181,20 @@ def train(config_path: str):
 
     discriminator = PatchDiscriminator(in_channels=config['model']['in_channels'])
 
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if resume_path:
+        start_epoch = load_checkpoint(resume_path, model, discriminator)
+
     # Initialize optimizers
     optimizer_g = optim.Adam(learning_rate=config['training']['learning_rate'])
     optimizer_d = optim.Adam(learning_rate=config['training']['learning_rate'])
 
     # Training loop
     steps_per_epoch = len(dataset) // config['training']['batch_size']
+    total_epochs = config['training']['num_epochs']
 
-    for epoch in range(config['training']['num_epochs']):
+    for epoch in range(start_epoch, total_epochs):
         pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}")
 
         epoch_losses = {'g_loss': 0, 'd_loss': 0, 'recon_loss': 0, 'vq_loss': 0}
@@ -210,6 +238,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train VQGAN")
     parser.add_argument("--config", type=str, default="configs/vqgan.yaml",
                         help="Path to config file")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to checkpoint to resume from (e.g., checkpoints/vqgan_epoch_0010.npz)")
     args = parser.parse_args()
 
-    train(args.config)
+    train(args.config, resume_path=args.resume)

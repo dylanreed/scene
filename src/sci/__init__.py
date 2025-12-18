@@ -1,1 +1,1 @@
-# SCI1 Resource Extraction Library
+"""SCI1 resource extraction modules."""

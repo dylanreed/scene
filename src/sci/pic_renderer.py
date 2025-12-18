@@ -1,287 +1,297 @@
-"""PIC resource renderer for SCI games."""
-
-import struct
-from typing import Optional
+"""SCI1 PIC renderer - execute drawing commands to generate images."""
+from typing import Tuple, List, Optional
 from PIL import Image
 
 from .palette import Palette
 
 
-# PIC drawing opcodes
-OP_SET_COLOR = 0xF0
-OP_DISABLE_VISUAL = 0xF1
-OP_SET_PRIORITY = 0xF2
-OP_DISABLE_PRIORITY = 0xF3
-OP_SHORT_LINES = 0xF4
-OP_MEDIUM_LINES = 0xF5
-OP_LONG_LINES = 0xF6
-OP_SHORT_RELATIVE = 0xF7
-OP_FILL = 0xF8
-OP_SET_PATTERN = 0xF9
-OP_SHORT_PATTERN = 0xFA
-OP_MEDIUM_PATTERN = 0xFB
-OP_LONG_PATTERN = 0xFC
-OP_EXTENDED = 0xFE
-OP_END = 0xFF
-
-# Image dimensions
-WIDTH = 320
-HEIGHT = 200
-
-
 class PicRenderer:
-    """Renderer for SCI PIC resources."""
+    """Render SCI1 PIC resources to images.
 
-    def __init__(self):
-        self.visual = bytearray(WIDTH * HEIGHT)  # Visual layer
-        self.palette = Palette()
-        self.current_color = 0
-        self.pos = 0  # Current position in data
+    SCI1 VGA PICs can contain:
+    - Vector drawing commands (lines, fills, patterns)
+    - Embedded bitmap data with RLE compression
+    - Embedded 256-color palette
 
-    def render(self, data: bytes) -> Optional[Image.Image]:
-        """Render PIC data to a PIL Image.
+    PIC opcodes:
+    0xF0: SET_COLOR - Set visual drawing color
+    0xF1: DISABLE_VISUAL - Stop drawing to visual layer
+    0xF2: SET_PRIORITY - Set priority color
+    0xF3: DISABLE_PRIORITY - Stop drawing to priority layer
+    0xF4: SHORT_LINES - Relative lines, 1-byte coords
+    0xF5: MEDIUM_LINES - Relative lines, mixed coords
+    0xF6: LONG_LINES - Absolute lines, 2-byte coords
+    0xF7: SHORT_RELATIVE - Short relative from last point
+    0xF8: FILL - Flood fill at coordinates
+    0xF9: SET_PATTERN - Set brush pattern/size
+    0xFA: SHORT_PATTERN - Pattern at short coords
+    0xFB: MEDIUM_PATTERN - Pattern at medium coords
+    0xFC: LONG_PATTERN - Pattern at absolute coords
+    0xFE: EXTENDED - Palette, embedded cels, etc.
+    0xFF: END - End of PIC data
 
-        Args:
-            data: Decompressed PIC resource data
+    Extended opcodes (0xFE):
+    0x01: Embedded bitmap/cel
+    0x02: Palette mapping table (256 bytes)
+    0x04: Priority bands
+    """
 
-        Returns:
-            PIL Image in RGB mode, or None if rendering failed
+    WIDTH = 320
+    HEIGHT = 200
+
+    def __init__(self, palette: Palette):
+        """Initialize renderer with palette."""
+        self.palette = palette
+        self.embedded_palette: Optional[List[Tuple[int, int, int]]] = None
+        self.visual: List[int] = [0] * (self.WIDTH * self.HEIGHT)
+        self.priority: List[int] = [0] * (self.WIDTH * self.HEIGHT)
+        self.visual_color: int = 0
+        self.priority_color: int = 0
+        self.visual_enabled: bool = True
+        self.priority_enabled: bool = True
+        self.pattern_code: int = 0
+        self.pattern_size: int = 0
+        self.last_x: int = 0
+        self.last_y: int = 0
+
+    def render(self, data: bytes) -> Image.Image:
+        """Render PIC data to an RGB image."""
+        self._reset()
+
+        # Check for SCI1 VGA format with embedded palette
+        if self._is_vga_pic_with_embedded_data(data):
+            return self._render_vga_embedded(data)
+
+        # Fall back to vector command rendering
+        self._execute(data)
+        return self._create_image()
+
+    def _is_vga_pic_with_embedded_data(self, data: bytes) -> bool:
+        """Check if this is a VGA PIC with embedded palette and bitmap."""
+        # VGA PICs start with 0xFE 0x02 (palette mapping) followed by
+        # 256 bytes of indices (0x00, 0x01, 0x02, ..., 0xFF)
+        if len(data) < 260:
+            return False
+        if data[0] != 0xFE or data[1] != 0x02:
+            return False
+        # Check if bytes 2-257 look like a sequential mapping table
+        if data[2:10] == bytes([0, 1, 2, 3, 4, 5, 6, 7]):
+            return True
+        return False
+
+    def _render_vga_embedded(self, data: bytes) -> Image.Image:
+        """Render VGA PIC with embedded palette and bitmap.
+
+        Format:
+        - 0xFE 0x02 + 256-byte mapping table
+        - 1024-byte embedded palette (256 * 4 bytes: flag, R, G, B)
+        - Extended commands including 0xFE 0x01 (embedded bitmap)
         """
-        # SCI1 VGA PIC structure:
-        # - Bytes 0-12: Header (13 bytes)
-        # - Bytes 13-1036: Palette (256 * 4 = 1024 bytes)
-        # - Bytes 1037+: Vector commands ending with 0xFF
-        # - After 0xFF: Bitmap data (RLE encoded)
-
-        if len(data) < 1037:  # Minimum size for header + palette
-            return None
-
-        # Load palette (offset 13, 1024 bytes = 256 * 4)
-        self.palette.load_from_pic_data(data, offset=13)
-
-        # Find end of drawing commands by properly parsing them
-        commands_start = 1037
-        bitmap_offset = self._find_bitmap_offset(data, commands_start)
-
-        if bitmap_offset is None or bitmap_offset >= len(data):
-            # No bitmap found, try pure vector rendering
-            self._execute_commands(data, commands_start)
-        else:
-            # Decode RLE bitmap
-            bitmap_size = len(data) - bitmap_offset
-            if bitmap_size > 0:
-                self._decode_rle_bitmap(data, bitmap_offset)
+        # Extract embedded palette (starts at position 258)
+        palette_start = 258
+        self.embedded_palette = []
+        for i in range(256):
+            off = palette_start + i * 4
+            if off + 3 < len(data):
+                # Format: flag, R, G, B
+                r = data[off + 1]
+                g = data[off + 2]
+                b = data[off + 3]
+                self.embedded_palette.append((r, g, b))
             else:
-                self._execute_commands(data, commands_start)
+                self.embedded_palette.append((0, 0, 0))
 
-        # Convert to PIL Image
-        return self._to_image()
+        # Find and decode embedded bitmap (0xFE 0x01)
+        bitmap_start = self._find_embedded_bitmap(data, palette_start + 1024)
+        if bitmap_start > 0:
+            return self._decode_rle_bitmap(data, bitmap_start)
 
-    def _find_bitmap_offset(self, data: bytes, start: int) -> Optional[int]:
-        """Find the offset where bitmap data starts by parsing vector commands."""
+        # Fall back to empty image
+        return Image.new('RGB', (self.WIDTH, self.HEIGHT), (0, 0, 0))
+
+    def _find_embedded_bitmap(self, data: bytes, start: int) -> int:
+        """Find position of embedded bitmap RLE data."""
         pos = start
-
-        # Opcodes with fixed argument lengths
-        fixed_opcodes = {
-            OP_SET_COLOR: 1,
-            OP_DISABLE_VISUAL: 0,
-            OP_SET_PRIORITY: 1,
-            OP_DISABLE_PRIORITY: 0,
-            OP_SET_PATTERN: 1,
-        }
-
-        # Opcodes with variable argument lengths (read until next opcode)
-        variable_opcodes = {
-            OP_SHORT_LINES, OP_MEDIUM_LINES, OP_LONG_LINES,
-            OP_SHORT_RELATIVE, OP_FILL, OP_SHORT_PATTERN,
-            OP_MEDIUM_PATTERN, OP_LONG_PATTERN, OP_EXTENDED
-        }
-
-        while pos < len(data):
-            opcode = data[pos]
-
-            if opcode == OP_END:
-                return pos + 1
-
-            if opcode in fixed_opcodes:
-                pos += 1 + fixed_opcodes[opcode]
-            elif opcode in variable_opcodes:
-                pos += 1
-                # Read argument bytes until we hit an opcode (>= 0xF0)
-                while pos < len(data) and data[pos] < 0xF0:
-                    pos += 1
-            elif opcode >= 0xF0:
-                # Unknown opcode, skip it
+        while pos < len(data) - 1:
+            if data[pos] == 0xFE:
+                sub = data[pos + 1]
+                if sub == 0x01:
+                    # Found embedded bitmap command
+                    # Header format: 0xFE 0x01 + coordinates + cel info
+                    # RLE data starts after header, look for first RLE opcode
+                    search_start = pos + 8
+                    for offset in range(search_start, min(search_start + 20, len(data))):
+                        byte = data[offset]
+                        # Look for valid RLE start (not 0x00 which could be header)
+                        if byte >= 0x80 or (byte > 0 and byte < 0x40):
+                            return offset
+                    return pos + 12  # Default offset if pattern not found
+                elif sub == 0x04:
+                    # Priority bands - 14 bytes of data
+                    pos += 2 + 14
+                else:
+                    pos += 2
+            elif data[pos] == 0xFF:
+                # END marker - continue searching
                 pos += 1
             else:
-                # Not an opcode, something is wrong
-                break
+                pos += 1
+        return -1
 
-        return None
-
-    def _decode_rle_bitmap(self, data: bytes, offset: int) -> None:
+    def _decode_rle_bitmap(self, data: bytes, start: int) -> Image.Image:
         """Decode RLE-compressed bitmap data.
 
-        SCI1 VGA RLE format:
-        - bytes 0x00-0x7F: literal pixel (palette index)
-        - bytes 0x80-0xFE: run of (byte - 0x80) pixels of the next byte's color
-        - byte 0xFF: typically marks end of data
+        RLE format (same as VIEW cels):
+        - Each byte: XXYYYYYY where XX is opcode, YYYYYY is count
+        - 00: Copy next count bytes literally
+        - 80: Fill count pixels with next byte
+        - C0: Skip count pixels (transparent/black)
         """
-        pos = offset
-        output_pos = 0
-        max_pixels = WIDTH * HEIGHT
+        output = bytearray(self.WIDTH * self.HEIGHT)
+        pos = start
+        out_pos = 0
+        total = self.WIDTH * self.HEIGHT
 
-        while pos < len(data) and output_pos < max_pixels:
+        while out_pos < total and pos < len(data):
             byte = data[pos]
             pos += 1
 
-            if byte < 0x80:
-                # Literal pixel
-                self.visual[output_pos] = byte
-                output_pos += 1
-            elif byte == 0xFF:
-                # End marker - check if we're close to done
-                if output_pos >= max_pixels - 100:
-                    break
-                # Otherwise treat as literal (some images use 0xFF as a color)
-                self.visual[output_pos] = byte
-                output_pos += 1
-            else:
-                # RLE run: repeat next byte (byte - 0x80) times
-                if pos >= len(data):
-                    break
-                count = byte - 0x80
-                if count == 0:
-                    count = 128  # 0x80 special case
-                color = data[pos]
-                pos += 1
+            op = byte & 0xC0
+            count = byte & 0x3F
+            if count == 0:
+                count = 64  # 0 means 64
 
-                end_pos = min(output_pos + count, max_pixels)
-                while output_pos < end_pos:
-                    self.visual[output_pos] = color
-                    output_pos += 1
+            if op == 0x00:  # Literal copy
+                for _ in range(count):
+                    if out_pos < total and pos < len(data):
+                        output[out_pos] = data[pos]
+                        pos += 1
+                        out_pos += 1
 
-    def _execute_commands(self, data: bytes, start_offset: int) -> None:
-        """Execute PIC drawing commands (for vector-based PICs)."""
-        self.pos = start_offset
+            elif op == 0x80:  # Fill
+                if pos < len(data):
+                    color = data[pos]
+                    pos += 1
+                    for _ in range(count):
+                        if out_pos < total:
+                            output[out_pos] = color
+                            out_pos += 1
 
-        while self.pos < len(data):
-            opcode = data[self.pos]
-            self.pos += 1
+            elif op == 0xC0:  # Skip (transparent)
+                out_pos += count
 
-            if opcode == OP_END:
+            else:  # 0x40 - treat as literal
+                for _ in range(count):
+                    if out_pos < total and pos < len(data):
+                        output[out_pos] = data[pos]
+                        pos += 1
+                        out_pos += 1
+
+        # Create image with embedded palette
+        img = Image.new('RGB', (self.WIDTH, self.HEIGHT))
+        pixels = []
+        palette = self.embedded_palette or [(0, 0, 0)] * 256
+
+        for y in range(self.HEIGHT):
+            for x in range(self.WIDTH):
+                idx = output[y * self.WIDTH + x]
+                if idx < len(palette):
+                    pixels.append(palette[idx])
+                else:
+                    pixels.append((0, 0, 0))
+
+        img.putdata(pixels)
+        return img
+
+    def _reset(self):
+        """Reset canvas to initial state."""
+        self.visual = [0] * (self.WIDTH * self.HEIGHT)
+        self.priority = [0] * (self.WIDTH * self.HEIGHT)
+        self.visual_color = 0
+        self.priority_color = 0
+        self.visual_enabled = True
+        self.priority_enabled = True
+        self.pattern_code = 0
+        self.pattern_size = 0
+        self.last_x = 0
+        self.last_y = 0
+
+    def _execute(self, data: bytes):
+        """Execute PIC drawing commands."""
+        pos = 0
+
+        while pos < len(data):
+            opcode = data[pos]
+            pos += 1
+
+            if opcode == 0xF0:  # SET_COLOR
+                if pos < len(data):
+                    self.visual_color = data[pos]
+                    self.visual_enabled = True
+                    pos += 1
+
+            elif opcode == 0xF1:  # DISABLE_VISUAL
+                self.visual_enabled = False
+
+            elif opcode == 0xF2:  # SET_PRIORITY
+                if pos < len(data):
+                    self.priority_color = data[pos]
+                    self.priority_enabled = True
+                    pos += 1
+
+            elif opcode == 0xF3:  # DISABLE_PRIORITY
+                self.priority_enabled = False
+
+            elif opcode == 0xF4:  # SHORT_LINES
+                pos = self._draw_short_lines(data, pos)
+
+            elif opcode == 0xF5:  # MEDIUM_LINES
+                pos = self._draw_medium_lines(data, pos)
+
+            elif opcode == 0xF6:  # LONG_LINES
+                pos = self._draw_long_lines(data, pos)
+
+            elif opcode == 0xF7:  # SHORT_RELATIVE
+                pos = self._draw_short_relative(data, pos)
+
+            elif opcode == 0xF8:  # FILL
+                pos = self._do_fill(data, pos)
+
+            elif opcode == 0xF9:  # SET_PATTERN
+                if pos < len(data):
+                    self.pattern_code = data[pos]
+                    self.pattern_size = self.pattern_code & 0x07
+                    pos += 1
+
+            elif opcode == 0xFA:  # SHORT_PATTERN
+                pos = self._draw_pattern_short(data, pos)
+
+            elif opcode == 0xFB:  # MEDIUM_PATTERN
+                pos = self._draw_pattern_medium(data, pos)
+
+            elif opcode == 0xFC:  # LONG_PATTERN
+                pos = self._draw_pattern_long(data, pos)
+
+            elif opcode == 0xFE:  # EXTENDED
+                pos = self._handle_extended(data, pos)
+
+            elif opcode == 0xFF:  # END
                 break
-            elif opcode == OP_SET_COLOR:
-                if self.pos < len(data):
-                    self.current_color = data[self.pos]
-                    self.pos += 1
-            elif opcode == OP_FILL:
-                self._do_fill(data)
-            elif opcode == OP_LONG_LINES:
-                self._do_long_lines(data)
-            elif opcode == OP_SHORT_LINES:
-                self._do_short_lines(data)
-            elif opcode in (OP_DISABLE_VISUAL, OP_SET_PRIORITY, OP_DISABLE_PRIORITY):
-                # These affect layers we don't care about for extraction
-                if opcode == OP_SET_PRIORITY and self.pos < len(data):
-                    self.pos += 1  # Skip priority color
-            elif opcode == OP_EXTENDED:
-                self._do_extended(data)
-            elif opcode >= 0xF0:
-                # Unknown opcode, try to continue
+
+            elif opcode < 0xF0:
+                # Not an opcode - might be data we're skipping over
                 pass
-            else:
-                # Byte < 0xF0 might be part of coordinate data
-                self.pos -= 1  # Put byte back
-                break
 
-    def _do_fill(self, data: bytes) -> None:
-        """Handle fill opcode."""
-        while self.pos + 1 < len(data):
-            if data[self.pos] >= 0xF0:
-                break
-            x = data[self.pos]
-            y = data[self.pos + 1]
-            self.pos += 2
+    def _draw_pixel(self, x: int, y: int):
+        """Draw a pixel at the given coordinates."""
+        if 0 <= x < self.WIDTH and 0 <= y < self.HEIGHT:
+            idx = y * self.WIDTH + x
+            if self.visual_enabled:
+                self.visual[idx] = self.visual_color
+            if self.priority_enabled:
+                self.priority[idx] = self.priority_color
 
-            if x >= 0xF0:
-                self.pos -= 2
-                break
-
-            self._flood_fill(x, y, self.current_color)
-
-    def _do_long_lines(self, data: bytes) -> None:
-        """Handle long lines opcode (absolute coordinates)."""
-        if self.pos + 1 >= len(data):
-            return
-
-        x1 = data[self.pos]
-        y1 = data[self.pos + 1]
-        self.pos += 2
-
-        while self.pos + 1 < len(data):
-            if data[self.pos] >= 0xF0:
-                break
-            x2 = data[self.pos]
-            y2 = data[self.pos + 1]
-            self.pos += 2
-
-            self._draw_line(x1, y1, x2, y2, self.current_color)
-            x1, y1 = x2, y2
-
-    def _do_short_lines(self, data: bytes) -> None:
-        """Handle short lines opcode (relative coordinates)."""
-        if self.pos + 1 >= len(data):
-            return
-
-        x = data[self.pos]
-        y = data[self.pos + 1]
-        self.pos += 2
-
-        while self.pos < len(data):
-            if data[self.pos] >= 0xF0:
-                break
-            delta = data[self.pos]
-            self.pos += 1
-
-            dx = (delta >> 4) & 0x0F
-            dy = delta & 0x0F
-
-            # Sign extend
-            if dx > 7:
-                dx -= 16
-            if dy > 7:
-                dy -= 16
-
-            x2 = x + dx
-            y2 = y + dy
-
-            self._draw_line(x, y, x2, y2, self.current_color)
-            x, y = x2, y2
-
-    def _do_extended(self, data: bytes) -> None:
-        """Handle extended opcode (palette, embedded views)."""
-        if self.pos >= len(data):
-            return
-
-        sub_opcode = data[self.pos]
-        self.pos += 1
-
-        if sub_opcode == 0x00:
-            # Set palette entry
-            if self.pos + 3 < len(data):
-                index = data[self.pos]
-                r = data[self.pos + 1]
-                g = data[self.pos + 2]
-                b = data[self.pos + 3]
-                self.pos += 4
-                self.palette.colors[index] = (r * 4, g * 4, b * 4)
-        elif sub_opcode == 0x01:
-            # Set full palette - skip 256*3 bytes
-            self.pos += 256 * 3
-        # Other sub-opcodes handled as needed
-
-    def _draw_line(self, x1: int, y1: int, x2: int, y2: int, color: int) -> None:
+    def _draw_line(self, x1: int, y1: int, x2: int, y2: int):
         """Draw a line using Bresenham's algorithm."""
         dx = abs(x2 - x1)
         dy = abs(y2 - y1)
@@ -289,83 +299,232 @@ class PicRenderer:
         sy = 1 if y1 < y2 else -1
         err = dx - dy
 
+        x, y = x1, y1
         while True:
-            if 0 <= x1 < WIDTH and 0 <= y1 < HEIGHT:
-                self.visual[y1 * WIDTH + x1] = color
-
-            if x1 == x2 and y1 == y2:
+            self._draw_pixel(x, y)
+            if x == x2 and y == y2:
                 break
-
             e2 = 2 * err
             if e2 > -dy:
                 err -= dy
-                x1 += sx
+                x += sx
             if e2 < dx:
                 err += dx
-                y1 += sy
+                y += sy
 
-    def _flood_fill(self, x: int, y: int, color: int) -> None:
-        """Simple flood fill."""
-        if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT:
+    def _draw_long_lines(self, data: bytes, pos: int) -> int:
+        """Draw absolute coordinate lines."""
+        if pos + 2 > len(data):
+            return pos
+
+        # First point
+        x = data[pos] | ((data[pos + 1] & 0xF0) << 4)
+        y = ((data[pos + 1] & 0x0F) << 8) | data[pos + 2] if pos + 2 < len(data) else 0
+        pos += 3
+
+        self.last_x = x
+        self.last_y = y
+
+        while pos + 2 < len(data):
+            byte0 = data[pos]
+            if byte0 >= 0xF0:
+                break
+
+            x2 = data[pos] | ((data[pos + 1] & 0xF0) << 4)
+            y2 = ((data[pos + 1] & 0x0F) << 8) | data[pos + 2]
+            pos += 3
+
+            self._draw_line(self.last_x, self.last_y, x2, y2)
+            self.last_x = x2
+            self.last_y = y2
+
+        return pos
+
+    def _draw_short_lines(self, data: bytes, pos: int) -> int:
+        """Draw short relative lines."""
+        if pos + 1 > len(data):
+            return pos
+
+        # First absolute point
+        x = data[pos]
+        y = data[pos + 1] if pos + 1 < len(data) else 0
+        pos += 2
+
+        self.last_x = x
+        self.last_y = y
+
+        while pos < len(data):
+            byte0 = data[pos]
+            if byte0 >= 0xF0:
+                break
+
+            # Sign extend 4-bit values
+            dx = byte0 >> 4
+            dy = byte0 & 0x0F
+            if dx >= 8:
+                dx -= 16
+            if dy >= 8:
+                dy -= 16
+
+            x2 = self.last_x + dx
+            y2 = self.last_y + dy
+            pos += 1
+
+            self._draw_line(self.last_x, self.last_y, x2, y2)
+            self.last_x = x2
+            self.last_y = y2
+
+        return pos
+
+    def _draw_medium_lines(self, data: bytes, pos: int) -> int:
+        """Draw medium coordinate lines."""
+        # Similar to short but with more precision
+        return self._draw_short_lines(data, pos)
+
+    def _draw_short_relative(self, data: bytes, pos: int) -> int:
+        """Draw short relative lines from last point."""
+        while pos < len(data):
+            byte0 = data[pos]
+            if byte0 >= 0xF0:
+                break
+
+            dx = (byte0 >> 4) - 8
+            dy = (byte0 & 0x0F) - 8
+
+            x2 = self.last_x + dx
+            y2 = self.last_y + dy
+            pos += 1
+
+            self._draw_line(self.last_x, self.last_y, x2, y2)
+            self.last_x = x2
+            self.last_y = y2
+
+        return pos
+
+    def _do_fill(self, data: bytes, pos: int) -> int:
+        """Perform flood fill."""
+        while pos + 1 < len(data):
+            byte0 = data[pos]
+            if byte0 >= 0xF0:
+                break
+
+            x = data[pos]
+            y = data[pos + 1] if pos + 1 < len(data) else 0
+            pos += 2
+
+            self._flood_fill(x, y)
+
+        return pos
+
+    def _flood_fill(self, start_x: int, start_y: int):
+        """Stack-based flood fill."""
+        if not (0 <= start_x < self.WIDTH and 0 <= start_y < self.HEIGHT):
             return
 
-        target_color = self.visual[y * WIDTH + x]
-        if target_color == color:
+        start_idx = start_y * self.WIDTH + start_x
+        target_color = self.visual[start_idx]
+
+        if target_color == self.visual_color:
             return
 
-        stack = [(x, y)]
+        stack = [(start_x, start_y)]
+        visited = set()
+
         while stack:
-            cx, cy = stack.pop()
-            if cx < 0 or cx >= WIDTH or cy < 0 or cy >= HEIGHT:
+            x, y = stack.pop()
+            if (x, y) in visited:
                 continue
-            if self.visual[cy * WIDTH + cx] != target_color:
+            if not (0 <= x < self.WIDTH and 0 <= y < self.HEIGHT):
                 continue
 
-            self.visual[cy * WIDTH + cx] = color
-            stack.extend([(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)])
+            idx = y * self.WIDTH + x
+            if self.visual[idx] != target_color:
+                continue
 
-    def _to_image(self) -> Image.Image:
-        """Convert visual buffer to PIL Image."""
-        # Create indexed image
-        img = Image.new('P', (WIDTH, HEIGHT))
-        img.putdata(list(self.visual))
-        img.putpalette(self.palette.to_pil_palette())
+            visited.add((x, y))
 
-        # Convert to RGB
-        return img.convert('RGB')
+            if self.visual_enabled:
+                self.visual[idx] = self.visual_color
+            if self.priority_enabled:
+                self.priority[idx] = self.priority_color
 
+            stack.append((x + 1, y))
+            stack.append((x - 1, y))
+            stack.append((x, y + 1))
+            stack.append((x, y - 1))
 
-def render_pic(data: bytes) -> Optional[Image.Image]:
-    """Convenience function to render PIC data."""
-    renderer = PicRenderer()
-    return renderer.render(data)
+    def _draw_pattern_short(self, data: bytes, pos: int) -> int:
+        """Draw pattern at short coordinates."""
+        while pos + 1 < len(data):
+            if data[pos] >= 0xF0:
+                break
+            x = data[pos]
+            y = data[pos + 1]
+            pos += 2
+            self._draw_pattern(x, y)
+        return pos
 
+    def _draw_pattern_medium(self, data: bytes, pos: int) -> int:
+        """Draw pattern at medium coordinates."""
+        return self._draw_pattern_short(data, pos)
 
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
+    def _draw_pattern_long(self, data: bytes, pos: int) -> int:
+        """Draw pattern at absolute coordinates."""
+        while pos + 2 < len(data):
+            if data[pos] >= 0xF0:
+                break
+            x = data[pos] | ((data[pos + 1] & 0xF0) << 4)
+            y = ((data[pos + 1] & 0x0F) << 8) | data[pos + 2]
+            pos += 3
+            self._draw_pattern(x, y)
+        return pos
 
-    if len(sys.argv) < 3:
-        print("Usage: python pic_renderer.py <path/to/game> <pic_number>")
-        sys.exit(1)
+    def _draw_pattern(self, x: int, y: int):
+        """Draw a pattern/brush at the given coordinates."""
+        size = self.pattern_size
+        for dy in range(-size, size + 1):
+            for dx in range(-size, size + 1):
+                if dx * dx + dy * dy <= size * size:
+                    self._draw_pixel(x + dx, y + dy)
 
-    # Import here to avoid circular imports
-    from .resource_reader import ResourceReader
+    def _handle_extended(self, data: bytes, pos: int) -> int:
+        """Handle extended opcodes."""
+        if pos >= len(data):
+            return pos
 
-    game_path = Path(sys.argv[1])
-    pic_num = int(sys.argv[2])
+        sub_opcode = data[pos]
+        pos += 1
 
-    reader = ResourceReader(game_path)
-    data = reader.read_pic(pic_num)
+        if sub_opcode == 0x00:  # Set palette entry
+            # Skip palette entry data
+            if pos + 4 <= len(data):
+                pos += 4
 
-    if data:
-        print(f"Read PIC #{pic_num}: {len(data)} bytes")
-        img = render_pic(data)
-        if img:
-            output_path = f"pic_{pic_num}.png"
-            img.save(output_path)
-            print(f"Saved to {output_path}")
-        else:
-            print("Failed to render PIC")
-    else:
-        print(f"Failed to read PIC #{pic_num}")
+        elif sub_opcode == 0x01:  # Set full palette
+            # Skip full palette data (768 or 1024 bytes)
+            pass
+
+        elif sub_opcode == 0x02:  # Set priority bands
+            # Priority bands table - skip 14 * 2 bytes
+            pos += 28 if pos + 28 <= len(data) else len(data) - pos
+
+        # Other extended opcodes - try to skip gracefully
+        return pos
+
+    def _create_image(self) -> Image.Image:
+        """Create PIL Image from visual canvas."""
+        img = Image.new('RGB', (self.WIDTH, self.HEIGHT))
+        pixels = []
+
+        for y in range(self.HEIGHT):
+            for x in range(self.WIDTH):
+                idx = y * self.WIDTH + x
+                color_idx = self.visual[idx]
+                if 0 <= color_idx < len(self.palette):
+                    r, g, b = self.palette[color_idx]
+                    pixels.append((r, g, b))
+                else:
+                    pixels.append((0, 0, 0))
+
+        img.putdata(pixels)
+        return img
