@@ -2,8 +2,9 @@
 
 import argparse
 import os
+import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -15,6 +16,7 @@ from tqdm import tqdm
 
 from dataset import ImageDataset, create_dataloader
 from vqgan import VQGAN, PatchDiscriminator
+from metrics import MetricsLogger, FIDScorer, is_fid_available
 
 
 def load_config(config_path: str) -> Dict:
@@ -68,6 +70,65 @@ def save_samples(model: VQGAN, batch: mx.array, epoch: int, output_dir: str):
         combined = np.concatenate([orig, recon], axis=1)
         img = Image.fromarray(combined)
         img.save(f"{output_dir}/epoch_{epoch:04d}_sample_{i}.png")
+
+
+def get_real_images(dataset: ImageDataset, num_samples: int) -> List[np.ndarray]:
+    """Get real images from dataset for FID computation.
+
+    Args:
+        dataset: Image dataset
+        num_samples: Number of images to sample
+
+    Returns:
+        List of numpy arrays (H, W, 3) in range [0, 255]
+    """
+    indices = np.random.choice(len(dataset), min(num_samples, len(dataset)), replace=False)
+    images = []
+    for idx in indices:
+        # Dataset returns normalized image, denormalize
+        img = dataset[idx]  # (C, H, W) in [-1, 1]
+        img = np.array(img)
+        img = ((img + 1) / 2 * 255).astype(np.uint8)
+        img = img.transpose(1, 2, 0)  # (H, W, C)
+        images.append(img)
+    return images
+
+
+def generate_reconstructions(
+    model: VQGAN,
+    dataloader,
+    num_samples: int
+) -> List[np.ndarray]:
+    """Generate reconstructed images for FID computation.
+
+    Args:
+        model: VQGAN model
+        dataloader: Data loader
+        num_samples: Number of reconstructions to generate
+
+    Returns:
+        List of numpy arrays (H, W, 3) in range [0, 255]
+    """
+    model.eval()
+    images = []
+    samples_collected = 0
+
+    while samples_collected < num_samples:
+        batch = next(dataloader)
+        x_recon, _, _ = model(batch)
+
+        # Denormalize
+        recons = ((x_recon + 1) / 2 * 255).astype(mx.uint8)
+        recons = np.array(recons)
+
+        for i in range(len(recons)):
+            if samples_collected >= num_samples:
+                break
+            img = recons[i].transpose(1, 2, 0)  # (H, W, C)
+            images.append(img)
+            samples_collected += 1
+
+    return images
 
 
 def hinge_loss_d(real_logits: mx.array, fake_logits: mx.array) -> mx.array:
@@ -152,6 +213,7 @@ def train(config_path: str, resume_path: str = None):
     # Create output directories
     os.makedirs("checkpoints", exist_ok=True)
     os.makedirs("outputs/vqgan_samples", exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
 
     # Load dataset
     dataset = ImageDataset(
@@ -190,11 +252,33 @@ def train(config_path: str, resume_path: str = None):
     optimizer_g = optim.Adam(learning_rate=config['training']['learning_rate'])
     optimizer_d = optim.Adam(learning_rate=config['training']['learning_rate'])
 
+    # Initialize metrics
+    metrics_config = config.get('metrics', {})
+    log_file = metrics_config.get('log_file', 'outputs/training_metrics.csv')
+    fid_every = metrics_config.get('fid_every', 5)
+    fid_samples = metrics_config.get('fid_samples', 500)
+    fid_full_at_end = metrics_config.get('fid_full_at_end', True)
+
+    logger = MetricsLogger(log_file)
+    print(f"Logging metrics to {log_file}")
+
+    # Initialize FID scorer if available
+    fid_scorer: Optional[FIDScorer] = None
+    if fid_every > 0 and is_fid_available():
+        print("Initializing FID scorer...")
+        fid_scorer = FIDScorer()
+        real_images = get_real_images(dataset, fid_samples)
+        fid_scorer.cache_real_features(real_images)
+    elif fid_every > 0:
+        print("FID scoring unavailable (install torch, torchvision, scipy)")
+
     # Training loop
     steps_per_epoch = len(dataset) // config['training']['batch_size']
     total_epochs = config['training']['num_epochs']
+    batch_size = config['training']['batch_size']
 
     for epoch in range(start_epoch, total_epochs):
+        epoch_start = time.time()
         pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}")
 
         epoch_losses = {'g_loss': 0, 'd_loss': 0, 'recon_loss': 0, 'vq_loss': 0}
@@ -212,7 +296,27 @@ def train(config_path: str, resume_path: str = None):
         for k in epoch_losses:
             epoch_losses[k] /= steps_per_epoch
 
+        epoch_duration = time.time() - epoch_start
+        num_samples = steps_per_epoch * batch_size
+
         print(f"Epoch {epoch+1} - " + " | ".join([f"{k}: {v:.4f}" for k, v in epoch_losses.items()]))
+
+        # Compute FID if enabled and this is an FID epoch
+        fid_score = None
+        if fid_scorer and fid_every > 0 and (epoch + 1) % fid_every == 0:
+            print("Computing FID...")
+            recon_images = generate_reconstructions(model, dataloader, fid_samples)
+            fid_score = fid_scorer.compute_fid(recon_images)
+            print(f"FID: {fid_score:.4f}")
+
+        # Log metrics
+        logger.log_epoch(
+            epoch=epoch + 1,
+            losses=epoch_losses,
+            duration=epoch_duration,
+            num_samples=num_samples,
+            fid=fid_score
+        )
 
         # Save samples
         if (epoch + 1) % config['training']['sample_every'] == 0:
@@ -225,6 +329,15 @@ def train(config_path: str, resume_path: str = None):
                 model, discriminator, optimizer_g, optimizer_d,
                 epoch + 1, f"checkpoints/vqgan_epoch_{epoch+1:04d}.npz"
             )
+
+    # Compute final FID on full dataset if enabled
+    if fid_scorer and fid_full_at_end:
+        print("Computing final FID on full dataset...")
+        full_real_images = get_real_images(dataset, len(dataset))
+        fid_scorer.cache_real_features(full_real_images)
+        full_recon_images = generate_reconstructions(model, dataloader, len(dataset))
+        final_fid = fid_scorer.compute_fid(full_recon_images)
+        print(f"Final FID (full dataset): {final_fid:.4f}")
 
     # Save final model
     save_checkpoint(

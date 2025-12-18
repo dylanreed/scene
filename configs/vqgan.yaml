@@ -19,3 +19,9 @@ data:
   # 200 -> 192 (closest divisible by 16)
   image_size: [320, 192]
   data_dir: "data/images"
+
+metrics:
+  log_file: "outputs/training_metrics.csv"
+  fid_every: 5           # compute FID every N epochs (0 to disable)
+  fid_samples: 500       # samples for FID computation
+  fid_full_at_end: true  # full dataset FID after training
