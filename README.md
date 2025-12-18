@@ -32,6 +32,14 @@ python src/train_vqgan.py --config configs/vqgan.yaml
 
 This trains the image encoder/decoder. Watch for reconstruction quality in `outputs/vqgan_samples/`.
 
+**What to expect:**
+- Epoch 1-5: Reconstruction is noise/color soup (normal)
+- Epoch 10-20: Blurry shapes, rough colors emerge
+- Epoch 30-50: Recognizable structure, some detail
+- Epoch 70-100: Sharp reconstructions
+
+Samples show original (left) vs reconstruction (right). The goal is for right to match left.
+
 ### Stage 2: Train Transformer
 
 ```bash
@@ -39,6 +47,30 @@ python src/train_transformer.py --config configs/transformer.yaml
 ```
 
 This trains text-to-image generation. Samples appear in `outputs/transformer_samples/`.
+
+### Resuming Training
+
+If training crashes or you need to stop, resume from any checkpoint:
+
+```bash
+python src/train_vqgan.py --resume checkpoints/vqgan_epoch_0050.npz
+python src/train_transformer.py --resume checkpoints/transformer_epoch_0050.npz
+```
+
+Checkpoints save every epoch by default.
+
+### Adding New Training Data
+
+To improve the model with more images:
+
+1. Add new images to `data/images/`
+2. Update `data/captions.jsonl` with new captions
+3. Resume from your best checkpoint:
+   ```bash
+   python src/train_vqgan.py --resume checkpoints/vqgan_epoch_0100.npz
+   ```
+
+The model trains on ALL images (old + new) but starts from existing knowledge. Usually only needs 10-20 more epochs to adapt, not another full training run.
 
 ## Generation
 
@@ -71,7 +103,35 @@ scene/
 
 ## Hardware
 
-Designed for Apple Silicon Macs using MLX. Training times:
+Designed for Apple Silicon Macs using MLX.
+
+### Recommended Specs
+
+| RAM | batch_size | Notes |
+|-----|------------|-------|
+| 8GB | 4-8 | Works but slower, reduce `hidden_channels` to 64 if needed |
+| 16GB | 16 | Recommended sweet spot |
+| 32GB+ | 24-32 | Faster training |
+
+### Config Tuning
+
+Edit `configs/vqgan.yaml`:
+
+```yaml
+training:
+  batch_size: 16        # increase with more RAM
+  learning_rate: 0.00015  # can increase slightly with larger batches
+```
+
+### Training Tips
+
+- **Close other apps** to free RAM (especially browsers)
+- **Plug in power** - Macs throttle on battery
+- **Good ventilation** - fanless Macs (Air) will thermal throttle if hot
+- Watch Activity Monitor for memory pressure (yellow/red = reduce batch size)
+
+### Training Times
+
 - VQGAN: ~1-2 days on M1/M2/M3
 - Transformer: ~2-4 days
 
