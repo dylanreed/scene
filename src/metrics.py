@@ -131,7 +131,7 @@ class FIDScorer:
         self.real_mu: Optional[np.ndarray] = None
         self.real_sigma: Optional[np.ndarray] = None
 
-    def _load_inception(self) -> nn.Module:
+    def _load_inception(self):
         """Load InceptionV3 and modify for feature extraction."""
         inception = models.inception_v3(weights=models.Inception_V3_Weights.IMAGENET1K_V1)
         inception.fc = nn.Identity()  # Remove final classification layer
@@ -139,7 +139,6 @@ class FIDScorer:
         inception.to(self.device)
         return inception
 
-    @torch.no_grad()
     def _extract_features(self, images: List[np.ndarray]) -> np.ndarray:
         """Extract InceptionV3 features from images.
 
@@ -154,22 +153,23 @@ class FIDScorer:
         features = []
         batch_size = 32
 
-        for i in range(0, len(images), batch_size):
-            batch_images = images[i:i + batch_size]
+        with torch.no_grad():
+            for i in range(0, len(images), batch_size):
+                batch_images = images[i:i + batch_size]
 
-            # Convert to PIL and apply transforms
-            tensors = []
-            for img in batch_images:
-                if img.dtype != np.uint8:
-                    img = (img * 255).astype(np.uint8)
-                pil_img = Image.fromarray(img)
-                tensors.append(self.transform(pil_img))
+                # Convert to PIL and apply transforms
+                tensors = []
+                for img in batch_images:
+                    if img.dtype != np.uint8:
+                        img = (img * 255).astype(np.uint8)
+                    pil_img = Image.fromarray(img)
+                    tensors.append(self.transform(pil_img))
 
-            batch = torch.stack(tensors).to(self.device)
+                batch = torch.stack(tensors).to(self.device)
 
-            # Extract features
-            feat = self.model(batch)
-            features.append(feat.cpu().numpy())
+                # Extract features
+                feat = self.model(batch)
+                features.append(feat.cpu().numpy())
 
         return np.concatenate(features, axis=0)
 
