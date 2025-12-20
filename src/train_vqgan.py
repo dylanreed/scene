@@ -210,10 +210,11 @@ def train(config_path: str, resume_path: str = None):
     """Main training loop."""
     config = load_config(config_path)
 
-    # Create output directories
-    os.makedirs("checkpoints", exist_ok=True)
-    os.makedirs("outputs/vqgan_samples", exist_ok=True)
-    os.makedirs("outputs", exist_ok=True)
+    # Create output directories (use absolute paths)
+    base_dir = "/Users/nervous/Library/CloudStorage/Dropbox/Github/scene"
+    os.makedirs(f"{base_dir}/checkpoints", exist_ok=True)
+    os.makedirs(f"{base_dir}/outputs/vqgan_samples", exist_ok=True)
+    os.makedirs(f"{base_dir}/outputs", exist_ok=True)
 
     # Load dataset
     dataset = ImageDataset(
@@ -321,13 +322,13 @@ def train(config_path: str, resume_path: str = None):
         # Save samples
         if (epoch + 1) % config['training']['sample_every'] == 0:
             sample_batch = next(dataloader)
-            save_samples(model, sample_batch, epoch + 1, "outputs/vqgan_samples")
+            save_samples(model, sample_batch, epoch + 1, f"{base_dir}/outputs/vqgan_samples")
 
         # Save checkpoint
         if (epoch + 1) % config['training']['save_every'] == 0:
             save_checkpoint(
                 model, discriminator, optimizer_g, optimizer_d,
-                epoch + 1, f"checkpoints/vqgan_epoch_{epoch+1:04d}.npz"
+                epoch + 1, f"{base_dir}/checkpoints/vqgan_epoch_{epoch+1:04d}.npz"
             )
 
     # Compute final FID on full dataset if enabled
@@ -342,7 +343,7 @@ def train(config_path: str, resume_path: str = None):
     # Save final model
     save_checkpoint(
         model, discriminator, optimizer_g, optimizer_d,
-        config['training']['num_epochs'], "checkpoints/vqgan_final.npz"
+        config['training']['num_epochs'], f"{base_dir}/checkpoints/vqgan_final.npz"
     )
     print("Training complete!")
 
