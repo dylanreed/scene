@@ -210,15 +210,18 @@ def train(config_path: str, resume_path: str = None):
     """Main training loop."""
     config = load_config(config_path)
 
-    # Create output directories (use absolute paths)
-    base_dir = "/Users/nervous/Library/CloudStorage/Dropbox/Github/scene"
+    # Create output directories (relative to script location)
+    base_dir = Path(__file__).parent.parent.resolve()
     os.makedirs(f"{base_dir}/checkpoints", exist_ok=True)
     os.makedirs(f"{base_dir}/outputs/vqgan_samples", exist_ok=True)
     os.makedirs(f"{base_dir}/outputs", exist_ok=True)
 
-    # Load dataset
+    # Load dataset (resolve path relative to base_dir)
+    data_dir = config['data']['data_dir']
+    if not os.path.isabs(data_dir):
+        data_dir = f"{base_dir}/{data_dir}"
     dataset = ImageDataset(
-        config['data']['data_dir'],
+        data_dir,
         image_size=tuple(config['data']['image_size'])
     )
     print(f"Loaded {len(dataset)} images")
@@ -253,9 +256,11 @@ def train(config_path: str, resume_path: str = None):
     optimizer_g = optim.Adam(learning_rate=config['training']['learning_rate'])
     optimizer_d = optim.Adam(learning_rate=config['training']['learning_rate'])
 
-    # Initialize metrics
+    # Initialize metrics (resolve path relative to base_dir)
     metrics_config = config.get('metrics', {})
     log_file = metrics_config.get('log_file', 'outputs/training_metrics.csv')
+    if not os.path.isabs(log_file):
+        log_file = f"{base_dir}/{log_file}"
     fid_every = metrics_config.get('fid_every', 5)
     fid_samples = metrics_config.get('fid_samples', 500)
     fid_full_at_end = metrics_config.get('fid_full_at_end', True)
