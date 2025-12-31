@@ -1,5 +1,10 @@
 """Training script for VQGAN Stage 1."""
 
+# Fix for macOS file descriptor issue with torch multiprocessing
+import multiprocessing
+if multiprocessing.get_start_method(allow_none=True) != 'spawn':
+    multiprocessing.set_start_method('spawn', force=True)
+
 import argparse
 import os
 import time
@@ -9,6 +14,7 @@ from typing import Dict, List, Optional
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+from mlx.utils import tree_flatten, tree_unflatten
 import numpy as np
 import yaml
 from PIL import Image
@@ -28,26 +34,39 @@ def load_config(config_path: str) -> Dict:
 def save_checkpoint(model: VQGAN, discriminator: PatchDiscriminator,
                     optimizer_g, optimizer_d, epoch: int, path: str):
     """Save model checkpoint."""
-    checkpoint = {
-        'epoch': epoch,
-        'model': model.parameters(),
-        'discriminator': discriminator.parameters(),
-    }
-    mx.save(path, checkpoint)
+    # Flatten parameters to list of (name, array) tuples
+    model_flat = list(tree_flatten(model.parameters()))
+    disc_flat = list(tree_flatten(discriminator.parameters()))
+
+    # Create save dict with prefixes to avoid key collisions
+    save_dict = {}
+    for name, arr in model_flat:
+        save_dict[f"model.{name}"] = arr
+    for name, arr in disc_flat:
+        save_dict[f"disc.{name}"] = arr
+    save_dict["epoch"] = mx.array([epoch])
+
+    mx.savez(path, **save_dict)
     print(f"Saved checkpoint to {path}")
 
 
 def load_checkpoint(path: str, model: VQGAN, discriminator: PatchDiscriminator):
     """Load model checkpoint and return starting epoch."""
-    checkpoint = mx.load(path)
+    data = dict(mx.load(path))
 
-    # Load model weights
-    model.load_weights(list(checkpoint['model'].items()))
-    discriminator.load_weights(list(checkpoint['discriminator'].items()))
+    # Extract epoch
+    epoch = int(data.pop("epoch").item())
 
-    start_epoch = checkpoint['epoch']
-    print(f"Loaded checkpoint from {path} (epoch {start_epoch})")
-    return start_epoch
+    # Separate model and discriminator params by prefix
+    model_params = [(k[6:], v) for k, v in data.items() if k.startswith("model.")]
+    disc_params = [(k[5:], v) for k, v in data.items() if k.startswith("disc.")]
+
+    # Load weights
+    model.load_weights(model_params)
+    discriminator.load_weights(disc_params)
+
+    print(f"Loaded checkpoint from {path} (epoch {epoch})")
+    return epoch
 
 
 def save_samples(model: VQGAN, batch: mx.array, epoch: int, output_dir: str):
