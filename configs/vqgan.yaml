@@ -8,7 +8,7 @@ model:
   downsample_factor: 16
 
 training:
-  batch_size: 16        # 16GB allows larger batches = fewer steps = faster
+  batch_size: 16        # may need to lower on 8GB machines
   learning_rate: 0.00015  # slightly higher with larger batch
   num_epochs: 100
   save_every: 1
@@ -22,6 +22,6 @@ data:
 
 metrics:
   log_file: "outputs/training_metrics.csv"
-  fid_every: 5           # compute FID every N epochs (0 to disable)
+  fid_every: 0           # compute FID every N epochs (0 to disable)
   fid_samples: 500       # samples for FID computation
   fid_full_at_end: true  # full dataset FID after training

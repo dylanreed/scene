@@ -1,0 +1,4 @@
+usage: train_vqgan.py [-h] [--config CONFIG] [--resume RESUME]
+train_vqgan.py: error: argument --config: expected one argument
+usage: train_vqgan.py [-h] [--config CONFIG] [--resume RESUME]
+train_vqgan.py: error: argument --config: expected one argument

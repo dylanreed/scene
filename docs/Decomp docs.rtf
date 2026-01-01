@@ -1,0 +1,891 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;\red255\green255\blue255;}
+{\*\expandedcolortbl;;\cssrgb\c100000\c100000\c100000;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\deftab720
+\pard\pardeftab720\partightenfactor0
+
+\f0\fs38 \cf0 \cb2 \expnd0\expndtw0\kerning0
+Resource files\
+Table of Contents\'a0SCI0 resources SCI1 resources Decompression algorithms\
+with significant contributions from Petr Vyhnak and Vladimir Gneushev\
+In order to allow games to be both distributeable and playable from several floppy disks, SCI was designed to support multi-volume data. The data itself could therefore be spread into separate files, with some of the more common resources present in more than one of them. The global index for these files was a "resource.map" file, which was read during startup and present on the same disk as the interpreter itself. This file contained a linear lookup table that mapped resource type/number tuples to a set of resource number/ offset tuples, which they could subsequently be read from.\
+SCI0 resources\
+\
+SCI0 resource.map\
+The SCI0 map file format is pretty simple: It consists of 6-byte entries, terminated by the sequence 0xffff ffff ffff. The first 2 bytes, interpreted as little endian 16 bit integer, encode resource type (high 5 bits) and number (low 11 bits). The next 4 bytes are a 32 bit LE integer that contains the resource file number in the high 6 bits, and the absolute offset within the file in the low 26 bits. SCI0 performs a linear search to find the resource; however, multiple entries may match the search, since resources may be present more than once (the inverse mapping is not injective).\
+\
+SCI0 resource.<nr>\
+SCI0 resource entries start with a four-tuple of little endian 16 bit words, which we will call (id, comp_size, decomp_size, method). id has the usual SCI0 semantics (high 5 are the resource type, low 11 are its number). comp_size and decomp_size are the size of the compressed and the decompressed resource, respectively. The compressed size actually starts counting at the record position of decomp_size, so it counts four bytes in addition to the actual content. method, finally, is the compression method used to store the data.\
+SCI1 resourcesSCI1 resource.map\
+The SCI1 resource.map starts with an array of 3-byte structures where the 1st byte is the resource type (0x80 ... 0x91) and next 2 bytes (interpreted as little-endian 16 bit integer) represent the absolute offset of the resource's lookup table (within resource.map). This first array is terminated by a 3-byte entry with has 0xFF as a type and the offset pointing to the first byte after the last resource type's lookup table. SCI1 first goes through this list to find the start of list for the correct resource type and remember this offset and the offset from the next entry to know where it ends. The resulting interval contains a sorted list of 6-byte structures, where the first LE 16 bit integer is the resource number, and the next LE 32 bit integer contains the resource file number in its high 4 bits and the absolute resource offset (in the indicated resource file) in its low 28 bits. Because the list is sorted and its length is known, Sierra SCI can use binary search to locate the resource ID it is looking for.\
+\
+SCI1 resource.<nr>\
+Later versions of SCI1 changed the resource file structure slightly: The resource header now contains a byte describing the resource's type, and a four-tuple (res_nr, comp_size, decomp_size, method), where\'a0comp_size,\'a0decomp_size, and\'a0method\'a0have the same meanings as before (with the exception of\'a0method\'a0referring to different algorithms), while res_nr is simply the resource's number.\
+\
+Decompression algorithms\
+The decompression algorithms used in SCI are as follows:\
+\
+Table 2-1. SCI0 compression algorithms\
+method\
+algorithm\
+0\
+uncompressed\
+1\
+LZW\
+2\
+HUFFMAN\
+\
+Table 2-2. SCI01 compression algorithms\
+method\
+algorithm\
+0\
+uncompressed\
+1\
+LZW\
+2\
+COMP3\
+3\
+HUFFMAN\
+\
+Table 2-3. SCI1.0 compression algorithms\
+method\
+algorithm\
+0\
+uncompressed\
+1\
+LZW\
+2\
+COMP3\
+3\
+UNKNOWN-0\
+4\
+UNKNOWN-1\
+Table 2-4. SCI1.1 compression algorithms\
+method\
+algorithm\
+0\
+uncompressed\
+18\
+DCL-EXPLODE\
+19\
+DCL-EXPLODE\
+20\
+DCL-EXPLODE\
+As reported by Vladimir Gneushev, SCI32 uses STACpack (as described in RFC 1974) explicitly, determining whether there is a need for compression by comparing the size of the compressed data block with that of the uncompressed.\
+\
+Decompression algorithm LZW\
+The LZW algorithm itself, when used for compression or decompression in an apparatus (sic) designed for compression and decompression, has been patented by Unisys in Japan, Europe, and the United States. Fortunately, FreeSCI only needs LZW decompression, which means that it does not match the description of the apparatus as given above. (Further, patents on software are (at the time of this writing) not enforceable in Europe, where the FreeSCI implementation of the LZW decompressor was written).\
+WriteMe.\
+\
+Decompression algorithm HUFFMAN\
+This is an implementation of a simple huffman token decoder, which looks up tokens in a huffman tree.\'a0A huffman tree\'a0is a hollow binary search tree. This means that all inner nodes, usually including the root, are empty, and have two siblings. The tree's leaves contain the actual information.\
+C Code:\
+FUNCTION get_next_bit(): Boolean;\
+/* This function reads the next bit from the input stream. Reading starts at the MSB. */\
+\
+\
+FUNCTION get_next_byte(): Byte\
+VAR\
+    i: Integer;\
+    literal: Byte;\
+BEGIN\
+    literal\'a0:= 0;\
+    FOR i\'a0:= 0 to 7 DO\
+        literal\'a0:= (literal &#60;&#60; 1) | get_next_bit();\
+    OD\
+    RETURN literal;\
+END\
+\
+\
+FUNCTION get_next_char(nodelist\'a0: Array of Nodes, index\'a0: Integer): (Char, Boolean)\
+VAR\
+    left, right: Integer;\
+    literal\'a0: Char;\
+    node\'a0: Node;\
+BEGIN\
+    Node\'a0:= nodelist[index];\
+\
+    IF node.siblings == 0 THEN\
+	RETURN (node.value, False);\
+    ELSE BEGIN\
+       left\'a0:= (node.siblings &#38; 0xf0) &#62;&#62; 4;\
+       right\'a0:= (node.siblings &#38; 0x0f);\
+\
+       IF get_next_bit() THEN BEGIN\
+	   IF right == 0 THEN /* Literal token */\
+	       literal\'a0:= ByteToChar(get_next_byte());\
+\
+	       RETURN (literal, True);\
+	   ELSE\
+	       RETURN get_next_char(nodelist, index + right)\
+        END ELSE\
+	        RETURN get_next_char(nodelist, index + left)\
+    END\
+END\
+\uc0\u8232 The function get_next_char() is executed until its second return value is True (i.e. if a value was read directly from the input stream) while the first return value equals a certain terminator character, which is the first byte stored in the compressed resource:\
+\
+Offset\
+Name\
+Meaning\
+0\
+terminator\
+Terminator character\
+1\
+nodes\
+Number of nodes\
+2 + i*2\
+nodelist[i].value\
+Value of node #i (0 \uc0\u8804  i < nodes)\
+3 + i*2\
+nodelist[i].siblings\
+Sibling nodes of node #i\
+2 + nodes*2\
+data[]\
+The actual compressed data\
+where nodelist[0] is the root node.\
+\
+Decompression algorithm COMP3\
+WriteMe.\
+\
+Decompression algorithm DCL-EXPLODE\
+originally by Petr Vyhnak\
+This algorithm matches one or more of the UNKNOWN algorithms.\
+This algorithm is based on the Deflate algorithm described in the Internet RFC 1951 (see also RFC 1950 for related material). The algorithm is quite similar to the explode algorithm (ZIP method #6 - implode ) but there are differences.\
+C Code:\
+	/* The first 2 bytes are parameters */\
+\
+P1 = ReadByte(); /* 0 or 1 */\
+	/* I think this means 0=binary and 1=ascii file, but in RESOURCEs I saw always 0 */\
+\
+P2 = ReadByte();\
+	/* must be 4,5 or 6 and it is a parameter for the decompression algorithm */\
+\
+\
+/* Now, a bit stream follows, which is decoded as described below: */\
+\
+\
+LOOP:\
+     read 1 bit (take bits from the lowest value (LSB) to the MSB i.e. bit 0, bit 1 etc ...)\
+         - if the bit is 0 read 8 bits and write it to the output as it is.\
+         - if the bit is 1 we have here a length/distance pair:\
+                 - decode a number with Hufmman Tree #1; variable bit length, result is 0x00 .. 0x0F -&#62; L1\
+                   if L1 &#60;= 7:\
+                         LENGTH = L1 + 2\
+                   if L1 &#62; 7\
+                         read more (L1-7) bits -&#62; L2\
+                         LENGTH = L2 + M[L1-7] + 2\
+\
+                 - decode another number with Hufmann Tree #2 giving result 0x00..0x3F -&#62; D1\
+                   if LENGTH == 2\
+                         D1 = D1 &#60;&#60; 2\
+                         read 2 bits -&#62; D2\
+                   else\
+                         D1 = D1 &#60;&#60; P2  // the parameter 2\
+                         read P2 bits -&#62; D2\
+\
+                   DISTANCE = (D1 | D2) + 1\
+\
+                 - now copy LENGTH bytes from (output_ptr-DISTANCE) to output_ptr\
+END LOOP\
+The algorithm terminates as soon as it runs out of bits. The data structures used are as follows:\
+\
+M\
+M is a constant array defined as M[0] = 7, M[n+1] = M[n]+ 2n. That means M[1] = 8, M[2] = 0x0A, M[3] = 0x0E, M[4] = 0x16, M[5] = 0x26, etc.\
+\
+Huffman Tree #1\
+The first huffman tree (the Section called\'a0Decompression algorithm HUFFMAN) contains the length values. It is described by the following table:\
+\
+value (hex)\
+code (binary)\
+0\
+101\
+1\
+11\
+2\
+100\
+3\
+011\
+4\
+0101\
+5\
+0100\
+6\
+0011\
+7\
+0010 1\
+8\
+0010 0\
+9\
+0001 1\
+a\
+0001 0\
+b\
+0000 11\
+c\
+0000 10\
+d\
+0000 01\
+e\
+0000 001\
+f\
+0000 000\
+where bits should be read from the left to the right.\
+\
+Huffman Tree #2\
+The second huffman code tree contains the distance values. It can be built from the following table:\
+\
+value (hex)\
+code (binary)\
+00\
+11\
+01\
+1011\
+02\
+1010\
+03\
+1001 1\
+04\
+1001 0\
+05\
+1000 1\
+06\
+1000 0\
+07\
+0111 11\
+08\
+0111 10\
+09\
+0111 01\
+0a\
+0111 00\
+0b\
+0110 11\
+0c\
+0110 10\
+0d\
+0110 01\
+0e\
+0110 00\
+0f\
+0101 11\
+10\
+0101 10\
+11\
+0101 01\
+12\
+0101 00\
+13\
+0100 11\
+14\
+0100 10\
+15\
+0100 01\
+16\
+0100 001\
+17\
+0100 000\
+18\
+0011 111\
+19\
+0011 110\
+1a\
+0011 101\
+1b\
+0011 100\
+1c\
+0011 011\
+1d\
+0011 010\
+1e\
+0011 001\
+1f\
+0011 000\
+20\
+0010 111\
+21\
+0010 110\
+22\
+0010 101\
+23\
+0010 100\
+24\
+0010 011\
+25\
+0010 010\
+26\
+0010 001\
+27\
+0010 000\
+28\
+0001 111\
+29\
+0001 110\
+2a\
+0001 101\
+2b\
+0001 100\
+2c\
+0001 011\
+2d\
+0001 010\
+2e\
+0001 001\
+2f\
+0001 000\
+30\
+0000 1111\
+31\
+0000 1110\
+32\
+0000 1101\
+33\
+0000 1100\
+34\
+0000 1011\
+35\
+0000 1010\
+36\
+0000 1001\
+37\
+0000 1000\
+38\
+0000 0111\
+39\
+0000 0110\
+3a\
+0000 0101\
+3b\
+0000 0100\
+3c\
+0000 0011\
+3d\
+0000 0010\
+3e\
+0000 0001\
+3f\
+0000 0000\
+where bits should be read from the left to the right.\
+\
+Huffman Tree #3\
+This tree describes literal values for ASCII mode, which adds another compression step to the algorithm.\
+\
+value (hex)\
+code (binary)\
+00\
+0000 1001 001\
+01\
+0000 0111 1111\
+02\
+0000 0111 1110\
+03\
+0000 0111 1101\
+04\
+0000 0111 1100\
+05\
+0000 0111 1011\
+06\
+0000 0111 1010\
+07\
+0000 0111 1001\
+08\
+0000 0111 1000\
+09\
+0001 1101\
+0a\
+0100 011\
+0b\
+0000 0111 0111\
+0c\
+0000 0111 0110\
+0d\
+0100 010\
+0e\
+0000 0111 0101\
+0f\
+0000 0111 0100\
+10\
+0000 0111 0011\
+11\
+0000 0111 0010\
+12\
+0000 0111 0001\
+13\
+0000 0111 0000\
+14\
+0000 0110 1111\
+15\
+0000 0110 1110\
+16\
+0000 0110 1101\
+17\
+0000 0110 1100\
+18\
+0000 0110 1011\
+19\
+0000 0110 1010\
+1a\
+0000 0010 0100 1\
+1b\
+0000 0110 1001\
+1c\
+0000 0110 1000\
+1d\
+0000 0110 0111\
+1e\
+0000 0110 0110\
+1f\
+0000 0110 0101\
+20\
+1111\
+21\
+0000 1010 01\
+22\
+0001 1100\
+23\
+0000 0110 0100\
+24\
+0000 1010 00\
+25\
+0000 0110 0011\
+26\
+0000 1001 11\
+27\
+0001 1011\
+28\
+0100 001\
+29\
+0100 000\
+2a\
+0001 1010\
+2b\
+0000 1101 1\
+2c\
+0011 111\
+2d\
+1001 01\
+2e\
+0011 110\
+2f\
+0001 1001\
+30\
+0011 101\
+31\
+1001 00\
+32\
+0011 100\
+33\
+0011 011\
+34\
+0011 010\
+35\
+0011 001\
+36\
+0001 1000\
+37\
+0011 000\
+38\
+0010 111\
+39\
+0001 0111\
+3a\
+0001 0110\
+3b\
+0000 0110 0010\
+3c\
+0000 1001 000\
+3d\
+0010 110\
+3e\
+0000 1101 0\
+3f\
+0000 1000 111\
+40\
+0000 0110 0001\
+41\
+1000 11\
+42\
+0010 101\
+43\
+1000 10\
+44\
+1000 01\
+45\
+1110 1\
+46\
+0010 100\
+47\
+0001 0101\
+48\
+0001 0100\
+49\
+1000 00\
+4a\
+0000 1000 110\
+4b\
+0000 1100 1\
+4c\
+0111 11\
+4d\
+0010 011\
+4e\
+0111 10\
+4f\
+0111 01\
+50\
+0010 010\
+51\
+0000 1000 101\
+52\
+0111 00\
+53\
+0110 11\
+54\
+0110 10\
+55\
+0010 001\
+56\
+0000 1100 0\
+57\
+0001 0011\
+58\
+0000 1011 1\
+59\
+0000 1011 0\
+5a\
+0000 1000 100\
+5b\
+0001 0010\
+5c\
+0000 1000 011\
+5d\
+0000 1010 1\
+5e\
+0000 0110 0000\
+5f\
+0001 0001\
+60\
+0000 0101 1111\
+61\
+1110 0\
+62\
+0110 01\
+63\
+0110 00\
+64\
+0101 11\
+65\
+1101 1\
+66\
+0101 10\
+67\
+0101 01\
+68\
+0101 00\
+69\
+1101 0\
+6a\
+0000 1000 010\
+6b\
+0010 000\
+6c\
+1100 1\
+6d\
+0100 11\
+6e\
+1100 0\
+6f\
+1011 1\
+70\
+0100 10\
+71\
+0000 1001 10\
+72\
+1011 0\
+73\
+1010 1\
+74\
+1010 0\
+75\
+1001 1\
+76\
+0001 0000\
+77\
+0001 111\
+78\
+0000 1111\
+79\
+0000 1110\
+7a\
+0000 1001 01\
+7b\
+0000 1000 001\
+7c\
+0000 1000 000\
+7d\
+0000 0101 1110\
+7e\
+0000 0101 1101\
+7f\
+0000 0101 1100\
+80\
+0000 0010 0100 0\
+81\
+0000 0010 0011 1\
+82\
+0000 0010 0011 0\
+83\
+0000 0010 0010 1\
+84\
+0000 0010 0010 0\
+85\
+0000 0010 0001 1\
+86\
+0000 0010 0001 0\
+87\
+0000 0010 0000 1\
+88\
+0000 0010 0000 0\
+89\
+0000 0001 1111 1\
+8a\
+0000 0001 1111 0\
+8b\
+0000 0001 1110 1\
+8c\
+0000 0001 1110 0\
+8d\
+0000 0001 1101 1\
+8e\
+0000 0001 1101 0\
+8f\
+0000 0001 1100 1\
+90\
+0000 0001 1100 0\
+91\
+0000 0001 1011 1\
+92\
+0000 0001 1011 0\
+93\
+0000 0001 1010 1\
+94\
+0000 0001 1010 0\
+95\
+0000 0001 1001 1\
+96\
+0000 0001 1001 0\
+97\
+0000 0001 1000 1\
+98\
+0000 0001 1000 0\
+99\
+0000 0001 0111 1\
+9a\
+0000 0001 0111 0\
+9b\
+0000 0001 0110 1\
+9c\
+0000 0001 0110 0\
+9d\
+0000 0001 0101 1\
+9e\
+0000 0001 0101 0\
+9f\
+0000 0001 0100 1\
+a0\
+0000 0001 0100 0\
+a1\
+0000 0001 0011 1\
+a2\
+0000 0001 0011 0\
+a3\
+0000 0001 0010 1\
+a4\
+0000 0001 0010 0\
+a5\
+0000 0001 0001 1\
+a6\
+0000 0001 0001 0\
+a7\
+0000 0001 0000 1\
+a8\
+0000 0001 0000 0\
+a9\
+0000 0000 1111 1\
+aa\
+0000 0000 1111 0\
+ab\
+0000 0000 1110 1\
+ac\
+0000 0000 1110 0\
+ad\
+0000 0000 1101 1\
+ae\
+0000 0000 1101 0\
+af\
+0000 0000 1100 1\
+b0\
+0000 0101 1011\
+b1\
+0000 0101 1010\
+b2\
+0000 0101 1001\
+b3\
+0000 0101 1000\
+b4\
+0000 0101 0111\
+b5\
+0000 0101 0110\
+b6\
+0000 0101 0101\
+b7\
+0000 0101 0100\
+b8\
+0000 0101 0011\
+b9\
+0000 0101 0010\
+ba\
+0000 0101 0001\
+bb\
+0000 0101 0000\
+bc\
+0000 0100 1111\
+bd\
+0000 0100 1110\
+be\
+0000 0100 1101\
+bf\
+0000 0100 1100\
+c0\
+0000 0100 1011\
+c1\
+0000 0100 1010\
+c2\
+0000 0100 1001\
+c3\
+0000 0100 1000\
+c4\
+0000 0100 0111\
+c5\
+0000 0100 0110\
+c6\
+0000 0100 0101\
+c7\
+0000 0100 0100\
+c8\
+0000 0100 0011\
+c9\
+0000 0100 0010\
+ca\
+0000 0100 0001\
+cb\
+0000 0100 0000\
+cc\
+0000 0011 1111\
+cd\
+0000 0011 1110\
+ce\
+0000 0011 1101\
+cf\
+0000 0011 1100\
+d0\
+0000 0011 1011\
+d1\
+0000 0011 1010\
+d2\
+0000 0011 1001\
+d3\
+0000 0011 1000\
+d4\
+0000 0011 0111\
+d5\
+0000 0011 0110\
+d6\
+0000 0011 0101\
+d7\
+0000 0011 0100\
+d8\
+0000 0011 0011\
+d9\
+0000 0011 0010\
+da\
+0000 0011 0001\
+db\
+0000 0011 0000\
+dc\
+0000 0010 1111\
+dd\
+0000 0010 1110\
+de\
+0000 0010 1101\
+df\
+0000 0010 1100\
+e0\
+0000 0000 1100 0\
+e1\
+0000 0010 1011\
+e2\
+0000 0000 1011 1\
+e3\
+0000 0000 1011 0\
+e4\
+0000 0000 1010 1\
+e5\
+0000 0010 1010\
+e6\
+0000 0000 1010 0\
+e7\
+0000 0000 1001 1\
+e8\
+0000 0000 1001 0\
+e9\
+0000 0010 1001\
+ea\
+0000 0000 1000 1\
+eb\
+0000 0000 1000 0\
+ec\
+0000 0000 0111 1\
+ed\
+0000 0000 0111 0\
+ee\
+0000 0010 1000\
+ef\
+0000 0000 0110 1\
+f0\
+0000 0000 0110 0\
+f1\
+0000 0000 0101 1\
+f2\
+0000 0010 0111\
+f3\
+0000 0010 0110\
+f4\
+0000 0010 0101\
+f5\
+0000 0000 0101 0\
+f6\
+0000 0000 0100 1\
+f7\
+0000 0000 0100 0\
+f8\
+0000 0000 0011 1\
+f9\
+0000 0000 0011 0\
+fa\
+0000 0000 0010 1\
+fb\
+0000 0000 0010 0\
+fc\
+0000 0000 0001 1\
+fd\
+0000 0000 0001 0\
+fe\
+0000 0000 0000 1\
+ff\
+0000 0000 0000 0\
+where bits should be read from the left to the right.\
+Decompression algorithm UNKNOWN\
+The algorithms listed as UNKNOWN-x have not yet been mapped to actual algorithms but are known to be used by the games. For some of them, it is possible that they match one of the algorithms described above, but have not yet been added to FreeSCI in an appropriate way (refer to DCL-EXPLODE for a good example).\
+}

@@ -151,7 +151,7 @@ class FIDScorer:
         from PIL import Image
 
         features = []
-        batch_size = 32
+        batch_size = 8
 
         with torch.no_grad():
             for i in range(0, len(images), batch_size):
