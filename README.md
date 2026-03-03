@@ -53,7 +53,7 @@ This trains text-to-image generation. Samples appear in `outputs/transformer_sam
 If training crashes or you need to stop, resume from any checkpoint:
 
 ```bash
-python src/train_vqgan.py --resume checkpoints/vqgan_epoch_0050.npz
+python3 src/train_vqgan.py --resume checkpoints/vqgan_epoch_0006.npz
 python src/train_transformer.py --resume checkpoints/transformer_epoch_0050.npz
 ```
 

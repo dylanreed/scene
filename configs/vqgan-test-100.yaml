@@ -1,0 +1,40 @@
+# ABOUTME: Test config for quick validation runs with limited images
+# ABOUTME: Uses 100 images and 10 epochs to verify training pipeline works
+
+model:
+  in_channels: 3
+  hidden_channels: 128
+  num_res_blocks: 3
+  codebook_size: 512
+  codebook_dim: 256
+  downsample_factor: 16
+
+training:
+  batch_size: 4
+  gradient_accumulation: 4
+  learning_rate_g: 0.0001
+  learning_rate_d: 0.00002
+  num_epochs: 10
+  save_every: 5
+  sample_every: 1
+
+  disc_weight: 0.8
+  disc_train_every: 2
+  disc_start_epoch: 0
+
+  lr_warmup_epochs: 2
+  lr_schedule: cosine
+
+  codebook_ema: true
+  codebook_ema_decay: 0.99
+  codebook_reset_threshold: 2
+
+data:
+  image_size: [320, 192]
+  data_dir: "data/images"
+  max_images: 100
+
+metrics:
+  log_file: "outputs/training_metrics_test.csv"
+  fid_every: 0
+  fid_samples: 50

@@ -1,4 +1,5 @@
-"""Full VQGAN model combining encoder, quantizer, and decoder."""
+# ABOUTME: Full VQGAN model combining encoder, quantizer, and decoder
+# ABOUTME: Encodes images to discrete tokens and decodes back to images
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -21,7 +22,10 @@ class VQGAN(nn.Module):
         hidden_channels: int = 128,
         codebook_size: int = 512,
         codebook_dim: int = 256,
-        num_res_blocks: int = 2
+        num_res_blocks: int = 2,
+        use_ema: bool = False,
+        ema_decay: float = 0.99,
+        reset_threshold: int = 2
     ):
         super().__init__()
 
@@ -34,7 +38,10 @@ class VQGAN(nn.Module):
 
         self.quantizer = VectorQuantizer(
             codebook_size=codebook_size,
-            codebook_dim=codebook_dim
+            codebook_dim=codebook_dim,
+            use_ema=use_ema,
+            ema_decay=ema_decay,
+            reset_threshold=reset_threshold
         )
 
         self.decoder = Decoder(

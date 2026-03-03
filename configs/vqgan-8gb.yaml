@@ -1,0 +1,48 @@
+# ABOUTME: VQGAN config optimized for 8GB RAM Mac Mini M1
+# ABOUTME: Reduces memory usage while maintaining training quality
+
+model:
+  in_channels: 3
+  hidden_channels: 64       # reduced from 128 for ~4x memory savings
+  num_res_blocks: 2         # reduced from 3
+  codebook_size: 512
+  codebook_dim: 128         # reduced from 256
+  # 320x200 -> 20x12 tokens (16x downscale)
+  downsample_factor: 16
+
+training:
+  batch_size: 2             # reduced from 4
+  gradient_accumulation: 8  # increased from 4 (effective batch size = 16)
+  learning_rate_g: 0.0001   # generator learning rate
+  learning_rate_d: 0.00002  # discriminator 5x slower
+  num_epochs: 100
+  save_every: 1
+  sample_every: 1
+
+  # Discriminator balance
+  disc_weight: 0.8
+  disc_train_every: 2
+  disc_start_epoch: 0
+
+  # Learning rate schedule
+  lr_warmup_epochs: 5
+  lr_schedule: cosine
+
+  # Codebook settings
+  codebook_ema: true
+  codebook_ema_decay: 0.99
+  codebook_reset_threshold: 2
+
+  # Memory management (8GB specific)
+  memory_cleanup_every: 4   # force mx.eval() every N steps
+  gc_every_epoch: true      # run garbage collection at epoch end
+
+data:
+  image_size: [320, 192]
+  data_dir: "data/images"
+
+metrics:
+  log_file: "outputs/training_metrics.csv"
+  fid_every: 0              # disabled - too memory intensive for 8GB
+  fid_samples: 500
+  fid_full_at_end: false

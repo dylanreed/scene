@@ -12,10 +12,25 @@ import json
 class ImageDataset:
     """Dataset for loading and preprocessing pixel art images."""
 
-    def __init__(self, data_dir: str, image_size: Tuple[int, int] = (320, 200)):
+    def __init__(
+        self,
+        data_dir: str,
+        image_size: Tuple[int, int] = (320, 200),
+        cache_in_memory: bool = False,
+        max_images: int = 0
+    ):
         self.data_dir = Path(data_dir)
         self.image_size = image_size  # (width, height)
         self.image_paths = self._find_images()
+
+        # Limit dataset size if specified (useful for quick tests)
+        if max_images > 0 and len(self.image_paths) > max_images:
+            self.image_paths = self.image_paths[:max_images]
+
+        self.cache = None
+
+        if cache_in_memory and len(self.image_paths) > 0:
+            self._preload_cache()
 
     def _find_images(self) -> List[Path]:
         """Find all image files in the data directory."""
@@ -26,6 +41,24 @@ class ImageDataset:
             paths.extend(self.data_dir.glob(f'*{ext.upper()}'))
         return sorted(paths)
 
+    def _preload_cache(self):
+        """Preload all images into RAM as uint8 arrays for faster training."""
+        print(f"Caching {len(self.image_paths)} images in RAM...")
+        self.cache = []
+        for i, img_path in enumerate(self.image_paths):
+            try:
+                img = Image.open(img_path).convert('RGB')
+                if img.size != self.image_size:
+                    img = img.resize(self.image_size, Image.Resampling.NEAREST)
+                arr = np.array(img, dtype=np.uint8)
+                self.cache.append(arr)
+            except Exception as e:
+                print(f"Warning: Could not load {img_path}: {e}")
+                self.cache.append(None)
+            if (i + 1) % 1000 == 0:
+                print(f"  Cached {i + 1}/{len(self.image_paths)} images")
+        print(f"Cache complete. Using ~{len(self.cache) * 320 * 192 * 3 / 1024 / 1024:.0f}MB RAM")
+
     def __len__(self) -> int:
         return len(self.image_paths)
 
@@ -35,8 +68,29 @@ class ImageDataset:
         Returns:
             numpy array of shape (C, H, W) normalized to [-1, 1]
         """
+        # Use cache if available
+        if self.cache is not None:
+            arr = self.cache[idx]
+            if arr is None:
+                # Cached entry failed, try next image
+                alt_idx = (idx + 1) % len(self.image_paths)
+                return self.__getitem__(alt_idx)
+            # Convert uint8 to float32 and normalize
+            arr = arr.astype(np.float32) / 255.0
+            arr = arr * 2.0 - 1.0
+            arr = np.transpose(arr, (2, 0, 1))
+            return arr
+
+        # Load from disk
         img_path = self.image_paths[idx]
-        img = Image.open(img_path).convert('RGB')
+        try:
+            img = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            # Handle transient file access errors (e.g., Dropbox sync)
+            print(f"Warning: Could not load {img_path}: {e}")
+            # Return a random other image instead
+            alt_idx = (idx + 1) % len(self.image_paths)
+            return self.__getitem__(alt_idx)
 
         # Resize if needed
         if img.size != self.image_size:

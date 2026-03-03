@@ -1,0 +1,47 @@
+# ABOUTME: VQGAN config for 8GB RAM - faster variant with less conservative settings
+# ABOUTME: Use if vqgan-8gb.yaml is stable but too slow
+
+model:
+  in_channels: 3
+  hidden_channels: 64       # reduced from 128 for ~4x memory savings
+  num_res_blocks: 2         # reduced from 3
+  codebook_size: 512
+  codebook_dim: 128         # reduced from 256
+  downsample_factor: 16
+
+training:
+  batch_size: 3             # up from 2
+  gradient_accumulation: 5  # effective batch size = 15
+  learning_rate_g: 0.0001
+  learning_rate_d: 0.00002
+  num_epochs: 100
+  save_every: 1
+  sample_every: 1
+
+  # Discriminator balance
+  disc_weight: 0.8
+  disc_train_every: 2
+  disc_start_epoch: 0
+
+  # Learning rate schedule
+  lr_warmup_epochs: 5
+  lr_schedule: cosine
+
+  # Codebook settings
+  codebook_ema: true
+  codebook_ema_decay: 0.99
+  codebook_reset_threshold: 2
+
+  # Memory management - less aggressive than conservative config
+  memory_cleanup_every: 8   # up from 4 (less overhead)
+  gc_every_epoch: true
+
+data:
+  image_size: [320, 192]
+  data_dir: "data/images"
+
+metrics:
+  log_file: "outputs/training_metrics.csv"
+  fid_every: 0
+  fid_samples: 500
+  fid_full_at_end: false

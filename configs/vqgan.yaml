@@ -1,18 +1,34 @@
 model:
   in_channels: 3
   hidden_channels: 128
-  num_res_blocks: 2
+  num_res_blocks: 3          # increased from 2 for more capacity
   codebook_size: 512
   codebook_dim: 256
   # 320x200 -> 20x12 tokens (16x downscale)
   downsample_factor: 16
 
 training:
-  batch_size: 16        # may need to lower on 8GB machines
-  learning_rate: 0.00015  # slightly higher with larger batch
+  batch_size: 4              # reduced to allow gradient accumulation
+  gradient_accumulation: 4   # effective batch size = 16
+  learning_rate_g: 0.0001    # generator learning rate
+  learning_rate_d: 0.00002   # discriminator 5x slower
   num_epochs: 100
   save_every: 1
   sample_every: 1
+
+  # Discriminator balance
+  disc_weight: 0.8           # increased from 0.1 for stronger adversarial signal
+  disc_train_every: 2        # train D every N generator steps
+  disc_start_epoch: 0        # epoch to start training discriminator
+
+  # Learning rate schedule
+  lr_warmup_epochs: 5        # warmup period
+  lr_schedule: cosine        # cosine decay after warmup
+
+  # Codebook settings
+  codebook_ema: true         # use EMA for codebook updates
+  codebook_ema_decay: 0.99   # EMA decay rate
+  codebook_reset_threshold: 2  # reset codes used fewer than N times per epoch
 
 data:
   # Height must be divisible by 16 (downsample_factor)
@@ -24,4 +40,4 @@ metrics:
   log_file: "outputs/training_metrics.csv"
   fid_every: 0           # compute FID every N epochs (0 to disable)
   fid_samples: 500       # samples for FID computation
-  fid_full_at_end: true  # full dataset FID after training
+  fid_full_at_end: false # disabled - would crash on 8GB Mac with 8762 images
